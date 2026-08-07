@@ -1,0 +1,4 @@
+id,channel,timestamp,raw_text
+REQ-A,Slack,2026-01-01 09:00,"Треба автоматизувати звіт по рекламі"
+REQ-B,Telegram,2026-01-01 09:05,"хз щось там зробіть"
+REQ-C,Email,2026-01-01 09:10,"Інтегруйте Slack з PlanFix будь ласка"
