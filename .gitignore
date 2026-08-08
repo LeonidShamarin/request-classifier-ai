@@ -10,3 +10,8 @@ output/*.md
 venv/
 .vscode
 
+# Claude Code & MCP local configuration
+.claude/
+.claude.json
+.claude.json.backup
+CLAUDE.local.md
