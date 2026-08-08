@@ -15,3 +15,5 @@ venv/
 .claude.json
 .claude.json.backup
 CLAUDE.local.md
+CLAUDE.md
+
