@@ -1,5 +1,10 @@
 """
 Агрегація результатів у короткий Markdown-звіт для людини, яка розбиратиме чергу.
+
+Важливо: у агрегати (категорії / пріоритети / відділи) потрапляють ЛИШЕ успішно
+класифіковані записи. Fallback-записи (LLM провалився) мають технічні заглушки
+замість реальних значень — якщо їх рахувати разом з рештою, вони мовчки роздують
+"інше" і "medium" і зіпсують статистику. Тому вони йдуть окремою секцією.
 """
 
 from __future__ import annotations
@@ -14,15 +19,25 @@ def build_report(records: list[ProcessedRequest]) -> str:
     dicts = [r.to_output_dict() for r in records]
 
     total = len(dicts)
-    by_category = Counter(d["category"] for d in dicts)
-    by_priority = Counter(d["priority"] for d in dicts)
-    by_department = Counter(d["target_department"] or "не визначено" for d in dicts)
+    classified = [d for d in dicts if d["processing_status"] == "ok"]
+    fallback_errors = [d for d in dicts if d["processing_status"] != "ok"]
+
+    by_category = Counter(d["category"] for d in classified)
+    by_priority = Counter(d["priority"] for d in classified)
+    by_department = Counter(d["target_department"] or "не визначено" for d in classified)
     needs_clarification = [d for d in dicts if d["needs_clarification"]]
-    fallback_errors = [d for d in dicts if d["processing_status"] == "fallback_error"]
 
     lines: list[str] = []
     lines.append("# Звіт по вхідних запитах\n")
-    lines.append(f"Усього оброблено запитів: **{total}**\n")
+    lines.append(f"Усього запитів у вхідному файлі: **{total}**")
+    lines.append(f"Успішно класифіковано: **{len(classified)}**")
+    lines.append(f"Не вдалось класифікувати: **{len(fallback_errors)}**\n")
+
+    if fallback_errors:
+        lines.append(
+            "> Агрегати нижче рахуються лише по успішно класифікованих "
+            f"({len(classified)}). Решта — в секції «Помилки обробки LLM».\n"
+        )
 
     lines.append("## По категоріях\n")
     for cat, count in by_category.most_common():
@@ -48,6 +63,20 @@ def build_report(records: list[ProcessedRequest]) -> str:
     else:
         lines.append("Немає.")
     lines.append("")
+
+    related = [d for d in dicts if d.get("related_request_id")]
+    if related:
+        lines.append(f"## Ймовірні дублікати ({len(related)})\n")
+        lines.append(
+            "Запити, що просять фактично те саме, що вже замовлено іншим запитом — "
+            "варто обʼєднати в одну задачу, а не вести двічі.\n"
+        )
+        for d in related:
+            lines.append(
+                f"- **{d['id']}** → **{d['related_request_id']}**: "
+                f"_{d.get('related_reason') or '—'}_"
+            )
+        lines.append("")
 
     if fallback_errors:
         lines.append(f"## Помилки обробки LLM ({len(fallback_errors)})\n")
