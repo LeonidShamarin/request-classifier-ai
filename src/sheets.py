@@ -29,6 +29,7 @@ HEADER = [
     "clarification_reason",
     "language",
     "related_request_id",
+    "related_reason",
     "confidence",
     "processing_status",
 ]
@@ -79,6 +80,7 @@ def write_to_sheet(records: list[ProcessedRequest]) -> bool:
                     d["clarification_reason"] or "",
                     d["language"] or "",
                     d["related_request_id"] or "",
+                    d.get("related_reason") or "",
                     str(d["confidence"]),
                     d["processing_status"],
                 ]
