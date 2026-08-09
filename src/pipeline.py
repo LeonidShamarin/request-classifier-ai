@@ -17,21 +17,23 @@ from src.schema import ProcessedRequest
 logger = logging.getLogger(__name__)
 
 
+REQUIRED_COLUMNS = {"id", "channel", "timestamp", "raw_text"}
+
+
 def read_requests(csv_path: Path) -> list[dict]:
-    with open(csv_path, encoding="utf-8") as f:
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        rows = list(reader)
-    required = {"id", "channel", "timestamp", "raw_text"}
-    missing = required - set(reader.fieldnames or [])
-    if missing:
-        raise ValueError(f"CSV missing required columns: {missing}")
-    return rows
+        # Валідуємо заголовок ДО читання рядків — на великому файлі немає сенсу
+        # вичитувати сотні мегабайт, щоб потім впасти через відсутню колонку.
+        missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"CSV missing required columns: {sorted(missing)}")
+        return list(reader)
 
 
 async def _process_one(
     client: GeminiClient,
     row: dict,
-    context_ids: list[str],
     semaphore: asyncio.Semaphore,
     max_retries: int,
 ) -> ProcessedRequest:
@@ -40,7 +42,6 @@ async def _process_one(
             result = await client.classify(
                 request_id=row["id"],
                 raw_text=row["raw_text"],
-                context_ids=context_ids,
                 max_retries=max_retries,
             )
             return ProcessedRequest(
@@ -85,16 +86,44 @@ async def process_all(
     max_retries: int = 1,
 ) -> list[ProcessedRequest]:
     rows = read_requests(csv_path)
-    context_ids = [r["id"] for r in rows]
     semaphore = asyncio.Semaphore(concurrency)
 
-    tasks = [
-        _process_one(client, row, context_ids, semaphore, max_retries) for row in rows
-    ]
+    tasks = [_process_one(client, row, semaphore, max_retries) for row in rows]
     results = await asyncio.gather(*tasks)
 
     # gather зберігає порядок вхідних тасків, але явно сортуємо по id
     # для детермінізму виводу незалежно від того, як асинхронно виконались задачі.
     order = {r["id"]: i for i, r in enumerate(rows)}
-    results = sorted(results, key=lambda r: order[r.id])
-    return list(results)
+    records = sorted(results, key=lambda r: order[r.id])
+
+    await _apply_related_links(client, records)
+    return records
+
+
+async def _apply_related_links(
+    client: GeminiClient, records: list[ProcessedRequest]
+) -> None:
+    """
+    Другий прохід по вже класифікованих записах — шукає дублікати запитів.
+    Мутує records на місці. Не критичний: якщо не вийшло, зв'язки просто
+    лишаються порожніми, а основний результат не страждає.
+    """
+    items = [
+        {
+            "id": r.id,
+            "category": r.classification.category,
+            "short_summary": r.classification.short_summary,
+        }
+        for r in records
+        if r.classification is not None
+    ]
+    links = await client.link_requests(items)
+    if not links:
+        return
+
+    by_id = {r.id: r for r in records}
+    for link in links:
+        record = by_id[link.request_id]
+        record.related_request_id = link.related_request_id
+        record.related_reason = link.reason
+    logger.info("Знайдено зв'язків між запитами: %d", len(links))

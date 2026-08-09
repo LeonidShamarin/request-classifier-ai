@@ -49,12 +49,6 @@ class LLMClassification(BaseModel):
         description="Чому запит розмитий. Обов'язково, якщо needs_clarification=true.",
     )
     language: Language
-    related_request_id: Optional[str] = Field(
-        default=None,
-        description="ID іншого запиту з цього ж інбоксу, якщо поточний явно "
-        "посилається на нього (напр. 'той самий звіт, що X просив'). "
-        "null, якщо зв'язку немає.",
-    )
     confidence: float = Field(ge=0.0, le=1.0)
 
     @field_validator("short_summary")
@@ -66,6 +60,20 @@ class LLMClassification(BaseModel):
     @classmethod
     def _clean_actions(cls, v: list[str]) -> list[str]:
         return [a.strip() for a in v if a and a.strip()]
+
+
+class RelatedLink(BaseModel):
+    """Одна знайдена пара «цей запит — про те саме, що й той»."""
+
+    request_id: str
+    related_request_id: str
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class LinkingResponse(BaseModel):
+    """Відповідь окремого проходу зв'язування (див. GeminiClient.link_requests)."""
+
+    links: list[RelatedLink] = Field(default_factory=list)
 
 
 class ProcessedRequest(BaseModel):
@@ -80,6 +88,12 @@ class ProcessedRequest(BaseModel):
     raw_text: str
 
     classification: Optional[LLMClassification] = None
+
+    # Заповнюється окремим batch-проходом ПІСЛЯ класифікації, а не самою
+    # класифікацією: зв'язок між запитами видно лише коли бачиш весь інбокс
+    # одночасно, а не кожен рядок окремо.
+    related_request_id: Optional[str] = None
+    related_reason: Optional[str] = None
 
     # Метадані пайплайну (не від LLM) — потрібні, щоб чесно показати,
     # де саме класифікація "здалась" і чому.
@@ -100,6 +114,8 @@ class ProcessedRequest(BaseModel):
         }
         if self.classification is not None:
             base.update(self.classification.model_dump())
+            base["related_request_id"] = self.related_request_id
+            base["related_reason"] = self.related_reason
         else:
             # fallback-запис без класифікації — усі поля класифікації null,
             # але needs_clarification примусово true, щоб запис не загубився
@@ -115,7 +131,8 @@ class ProcessedRequest(BaseModel):
                     "clarification_reason": self.processing_error
                     or "LLM classification failed after retries",
                     "language": None,
-                    "related_request_id": None,
+                    "related_request_id": self.related_request_id,
+                    "related_reason": self.related_reason,
                     "confidence": 0.0,
                 }
             )
