@@ -391,7 +391,7 @@ class FallbackClassifier:
         for name, client in self.members:
             try:
                 return await getattr(client, method)(*args, **kwargs)
-            except (LLMClassificationError, DailyQuotaExceeded) as exc:
+            except (LLMClassificationError, DailyQuotaExceeded, genai_errors.APIError) as exc:
                 errors.append(f"{name}: {str(exc)[:150]}")
         raise LLMClassificationError("усі Gemini-ключі відмовили -> " + " | ".join(errors))
 
