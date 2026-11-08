@@ -16,7 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.llm_client import DEFAULT_RPM, MODEL_NAME, GeminiClient
+from src.llm_client import DEFAULT_RPM, MODEL_NAME, build_classifier
 from src.pipeline import process_all
 from src.report import write_report
 from src.sheets import write_to_sheet
@@ -78,7 +78,7 @@ async def run(args: argparse.Namespace) -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    client = GeminiClient(api_key=api_key, model_name=args.model, rpm=args.rpm)
+    client = build_classifier(model_name=args.model, rpm=args.rpm)
 
     logger.info(
         "Обробка %s (model=%s, concurrency=%d, rpm=%d)...",

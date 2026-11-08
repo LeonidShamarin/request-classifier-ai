@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -356,3 +357,67 @@ def _parse_json(raw: str) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"Expected JSON object, got {type(data).__name__}")
     return data
+
+
+# --- фолбек між кількома Gemini-ключами --------------------------------------
+#
+# Класифікація йде через `google-genai` з `response_schema`, тож крос-провайдерний
+# фолбек непрактичний. Натомість ротуємо Gemini-ключі: основний GEMINI_API_KEY,
+# далі ключі з ключі2.txt (GEMINI_API_KEY_2/_3) в останню чергу — це покриває
+# мертвий ключ і вичерпану за добу квоту. Кожен ключ має власний клієнт (свій
+# rate limiter і прапорець денної квоти). Проксіюємо обидва публічні методи.
+
+_GEMINI_KEY_VARS = ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3")
+
+
+class FallbackClassifier:
+    """Пробує Gemini-ключі по черзі; на `LLMClassificationError`/`DailyQuotaExceeded`
+    бере наступний. Кидає помилку лише коли відмовили всі ключі, тож pipeline, як і
+    раніше, перетворює її на запис `processing_status='fallback_error'`."""
+
+    def __init__(self, members: list[tuple[str, GeminiClient]]):
+        if not members:
+            raise ValueError("порожній ланцюжок Gemini-ключів")
+        self.members = members
+
+    async def classify(self, request_id: str, raw_text: str, max_retries: int = 1):
+        return await self._run("classify", request_id, raw_text, max_retries=max_retries)
+
+    async def link_requests(self, items: list[dict]):
+        return await self._run("link_requests", items)
+
+    async def _run(self, method: str, *args, **kwargs):
+        errors: list[str] = []
+        for name, client in self.members:
+            try:
+                return await getattr(client, method)(*args, **kwargs)
+            except (LLMClassificationError, DailyQuotaExceeded) as exc:
+                errors.append(f"{name}: {str(exc)[:150]}")
+        raise LLMClassificationError("усі Gemini-ключі відмовили -> " + " | ".join(errors))
+
+
+def _gemini_keys(env: dict) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for var in _GEMINI_KEY_VARS:
+        key = (env.get(var) or "").strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append((var, key))
+    return out
+
+
+def build_classifier(model_name: str = MODEL_NAME, rpm: int = DEFAULT_RPM,
+                     temperature: float = 0.0, *, env: dict | None = None):
+    """Збирає клієнт із ланцюжком Gemini-ключів, або `None`, якщо жодного ключа
+    немає. Один ключ — звичайний `GeminiClient`, кілька — обгортка з фолбеком."""
+    env = os.environ if env is None else env
+    keys = _gemini_keys(env)
+    if not keys:
+        return None
+    members = [(f"gemini:{var}", GeminiClient(api_key=key, model_name=model_name,
+                                              temperature=temperature, rpm=rpm))
+               for var, key in keys]
+    if len(members) == 1:
+        return members[0][1]
+    return FallbackClassifier(members)
